@@ -34,7 +34,7 @@ const TransactionList = ({ userId }) => {
   const searchTransactions = async () => {
     try {
       setIsSearching(true);
-      // Call the vulnerable endpoint that's subject to SQL injection
+      
       const response = await fetch(`${API_BASE_URL}/api/transactions/search?description=${encodeURIComponent(searchTerm)}`, {
         headers: {
           'Authorization': `Bearer ${localStorage.getItem('token')}`
@@ -162,9 +162,9 @@ const TransactionList = ({ userId }) => {
                     {transaction.description || '-'}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
-                    {/* Opens the server-rendered receipt page, which reflects the
-                        transaction memo unescaped (stored XSS) and enforces no
-                        ownership check (IDOR). */}
+                    
+
+
                     <a
                       href={`${API_BASE_URL}/api/transactions/${transaction.id}/receipt`}
                       target="_blank"
