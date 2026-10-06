@@ -5,7 +5,7 @@ import jwt
 from auth import token_required
 import json
 import hashlib
-import yaml  # Add YAML support for profile imports
+import yaml
 
 auth_bp = Blueprint('auth', __name__)
 
@@ -66,11 +66,11 @@ def login():
                 'balance': float(user_obj.balance)
             }
         })
-        # VULNERABILITY: CSRF (CWE-352) + insecure cookie (CWE-1004/CWE-614)
-        # The JWT is mirrored into a cookie with NO SameSite, NO HttpOnly and
-        # NO Secure flag, and cookie-authenticated endpoints (see /api/quickpay)
-        # require no CSRF token. This makes cross-site request forgery possible
-        # and lets any XSS payload read the session cookie from document.cookie.
+
+
+
+
+
         resp.set_cookie('session_token', token, httponly=False, secure=False)
         return resp
     
@@ -88,8 +88,8 @@ def login():
 @auth_bp.route('/api/logout', methods=['POST'])
 @token_required
 def logout(current_user):
-    # JWT tokens can't be invalidated server-side
-    # Client should remove the token
+
+
     return jsonify({'message': 'Logged out successfully'})
 
 @auth_bp.route('/api/me', methods=['GET'])
@@ -118,10 +118,10 @@ def get_profile(current_user):
 def update_profile(current_user):
     data = request.get_json()
     
-    # Update email in User model
+
     current_user.email = data.get('email')
     
-    # Update profile JSON data
+
     profile_data = {
         'fullName': data.get('fullName'),
         'phone': data.get('phone'),
@@ -155,29 +155,29 @@ def update_password(current_user):
         return jsonify({'message': 'Password updated'})
     return jsonify({'error': 'User not found'}), 404 
 
-# ============================================================
-# VULNERABILITY: Insecure Password Reset
-#   - Predictable reset token (CWE-330): token = md5(username), so an attacker
-#     can derive any user's token without ever triggering a reset email.
-#   - Host header injection / reset-link poisoning (CWE-644): the reset URL is
-#     built from the client-controlled Host header.
-#   - Broken authentication / account takeover (CWE-640): no expiry, no rate
-#     limiting, no proof of account ownership.
-# Semgrep rules: python.lang.security.audit.weak-token-generation
-# ============================================================
+
+
+
+
+
+
+
+
+
+
 @auth_bp.route('/api/forgot-password', methods=['POST'])
 def forgot_password():
     data = request.get_json()
     username = data.get('username', '')
 
     user = User.query.filter_by(username=username).first()
-    # Predictable token derived purely from the (public) username
+
     token = hashlib.md5(username.encode()).hexdigest()
     if user:
         user.reset_token = token
         db.session.commit()
 
-    # Reset link built from the attacker-controllable Host header
+
     host = request.headers.get('Host')
     reset_link = f"http://{host}/reset-password?user={username}&token={token}"
 
@@ -199,7 +199,7 @@ def reset_password():
     if not user:
         return jsonify({'error': 'User not found'}), 404
 
-    # Token is just md5(username) - guessable, never expires, no ownership proof
+
     if token != hashlib.md5(username.encode()).hexdigest():
         return jsonify({'error': 'Invalid reset token'}), 403
 
@@ -214,7 +214,7 @@ def reset_password():
 def import_profile(current_user):
     try:
         profile_yaml = request.get_json().get('profile_yaml', '')
-        # Vulnerable: directly loads YAML that could contain malicious code
+
         profile_data = yaml.load(profile_yaml, Loader=yaml.Loader)
         
         if isinstance(profile_data, dict):

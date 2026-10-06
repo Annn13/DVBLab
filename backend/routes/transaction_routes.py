@@ -88,8 +88,8 @@ def get_transaction(current_user, transaction_id):
 def search_transactions(current_user):
     search_term = request.args.get('description', '')
     
-    # VULNERABLE CODE: Direct string concatenation in SQL query
-    # This is deliberately vulnerable to SQL injection for educational purposes
+
+
     query = f"SELECT * FROM \"transaction\" WHERE (sender_id = {current_user.id} OR receiver_id = {current_user.id}) AND description LIKE '%{search_term}%'"
     
     result = db.session.execute(query)
@@ -111,14 +111,14 @@ def search_transactions(current_user):
     return jsonify(transaction_list)
 
 
-# ============================================================
-# VULNERABILITY: Cross-Site Request Forgery - CSRF (CWE-352)
-# Semgrep rules: python.flask.security.audit.no-csrf-protection
-# Authenticated only by the ambient `session_token` cookie (no SameSite),
-# accepts a form-urlencoded body and requires NO anti-CSRF token, so a
-# cross-site auto-submitting <form> can move money out of the victim's
-# account. See docs/exploits/csrf_transfer.html.
-# ============================================================
+
+
+
+
+
+
+
+
 @transaction_bp.route('/api/quickpay', methods=['POST'])
 @cookie_auth
 def quickpay(current_user):
@@ -131,7 +131,7 @@ def quickpay(current_user):
     if not receiver:
         return jsonify({'error': 'Receiver not found'}), 404
 
-    # No CSRF token, no amount validation, non-atomic balance update
+
     current_user.balance -= amount
     receiver.balance += amount
     transaction = Transaction(
@@ -148,15 +148,15 @@ def quickpay(current_user):
     return jsonify({'message': 'QuickPay sent', 'transaction': transaction.to_dict()})
 
 
-# ============================================================
-# VULNERABILITY: Stored XSS (CWE-79) + IDOR / Broken Access Control (CWE-639)
-# Semgrep rules: python.flask.security.audit.unescaped-template-extension
-# The receipt page has NO authentication and NO ownership check (any receipt
-# id is viewable) and the user-controlled transaction `description` (memo) is
-# interpolated straight into HTML with no escaping, so a memo containing a
-# <script> tag executes in the viewer's browser (e.g. to steal the
-# non-HttpOnly session_token cookie / localStorage token).
-# ============================================================
+
+
+
+
+
+
+
+
+
 @transaction_bp.route('/api/transactions/<int:transaction_id>/receipt', methods=['GET'])
 def transaction_receipt(transaction_id):
     transaction = Transaction.query.get(transaction_id)
@@ -168,7 +168,7 @@ def transaction_receipt(transaction_id):
     sender_name = sender.username if sender else 'unknown'
     receiver_name = receiver.username if receiver else 'unknown'
 
-    # Unescaped interpolation of the user-controlled memo -> stored XSS
+
     html = f"""<!doctype html>
 <html>
   <head><title>DVBank Receipt #{transaction.id}</title></head>
@@ -187,15 +187,15 @@ def transaction_receipt(transaction_id):
     return html
 
 
-# ============================================================
-# VULNERABILITY: Broken Access Control / Insecure Business Logic
-#                (CWE-639, CWE-840)
-# The payer (`from_user_id`) is taken from the request body and never checked
-# against the authenticated user, so anyone can pull money OUT of any account.
-# There is also no amount validation (negative / zero / overflow accepted) and
-# the balance update is non-atomic (app.py isolation_level=None) -> race
-# conditions / double-spend. See docs/exploits/race_double_spend.py.
-# ============================================================
+
+
+
+
+
+
+
+
+
 @transaction_bp.route('/api/split-bill', methods=['POST'])
 @token_required
 def split_bill(current_user):

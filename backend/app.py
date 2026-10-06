@@ -14,41 +14,41 @@ import sqlite3
 
 app = Flask(__name__)
 
-# Configuration
+
 app.config['SECRET_KEY'] = 'supersecret'
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///vulnerable_bank.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
     'connect_args': {
-        'timeout': 10,  # Set SQLite timeout to 10 seconds
-        'check_same_thread': False,  # Allow access from multiple threads
-        'isolation_level': None,  # Use autocommit mode
+        'timeout': 10,
+        'check_same_thread': False,
+        'isolation_level': None,
     },
-    'poolclass': None,  # Disable connection pooling for SQLite
-    'pool_pre_ping': True,  # Check connection validity before using from pool
-    'pool_recycle': 3600  # Recycle connections after 1 hour
+    'poolclass': None,
+    'pool_pre_ping': True,
+    'pool_recycle': 3600
 }
 
-# Configure SQLite for better concurrency
+
 @event.listens_for(Engine, "connect")
 def set_sqlite_pragma(dbapi_connection, connection_record):
     if isinstance(dbapi_connection, sqlite3.Connection):
         cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA journal_mode=WAL;")  # Write-Ahead Logging for better concurrency
-        cursor.execute("PRAGMA synchronous=NORMAL;")  # Reduce synchronous for better performance
-        cursor.execute("PRAGMA busy_timeout=10000;")  # Set busy timeout to 10 seconds (10000 ms)
+        cursor.execute("PRAGMA journal_mode=WAL;")
+        cursor.execute("PRAGMA synchronous=NORMAL;")
+        cursor.execute("PRAGMA busy_timeout=10000;")
         cursor.close()
 
-# SECURITY VULNERABILITIES FOR EDUCATIONAL PURPOSES:
-# 1. Intentionally vulnerable CORS configuration - DO NOT USE IN PRODUCTION
-# 2. SQL Injection in transaction search - vulnerable endpoint at /api/transactions/search
-# 3. Weak password hashing (MD5) in User model
-# 4. Sensitive data exposure in user profiles
 
-# Intentionally vulnerable CORS configuration - DO NOT USE IN PRODUCTION
+
+
+
+
+
+
 @app.after_request
 def after_request(response):
-    # Reflect any origin in CORS headers - INSECURE!
+
     origin = request.headers.get('Origin')
     if origin:
         response.headers.add('Access-Control-Allow-Origin', origin)
@@ -57,16 +57,16 @@ def after_request(response):
         response.headers.add('Access-Control-Allow-Credentials', 'true')
     return response
 
-# Initialize extensions
+
 db.init_app(app)
 
-# Register blueprints
+
 app.register_blueprint(auth_bp)
 app.register_blueprint(transaction_bp)
 app.register_blueprint(admin_bp)
 app.register_blueprint(upload_bp)
 
-# Error handlers
+
 @app.errorhandler(404)
 def not_found_error(error):
     return jsonify({'error': str(error)}), 404
@@ -76,12 +76,12 @@ def internal_error(error):
     db.session.rollback()
     return jsonify({'error': str(error)}), 500
 
-# Create database tables
+
 def init_db():
     with app.app_context():
         db.create_all()
         
-        # Create test users if they don't exist
+
         test_users = [
             {
                 'username': 'alice',
@@ -94,7 +94,7 @@ def init_db():
                     'address': '123 Secure St, Cryptoville, CV 94024',
                     'email': 'alice@bank.com',
                     'dob': '1990-03-15',
-                    'ssn': '123-45-6789'  # Intentionally exposed sensitive data
+                    'ssn': '123-45-6789'
                 }
             },
             {
@@ -108,7 +108,7 @@ def init_db():
                     'address': '456 Blockchain Ave, Cryptoville, CV 94024',
                     'email': 'bob@bank.com',
                     'dob': '1985-07-22',
-                    'ssn': '987-65-4321'  # Intentionally exposed sensitive data
+                    'ssn': '987-65-4321'
                 }
             },
             {
@@ -122,7 +122,7 @@ def init_db():
                     'address': '789 Privacy Lane, Cryptoville, CV 94024',
                     'email': 'charlie@bank.com',
                     'dob': '1988-11-30',
-                    'ssn': '456-78-9012'  # Intentionally exposed sensitive data
+                    'ssn': '456-78-9012'
                 }
             },
             {
@@ -185,7 +185,7 @@ def init_db():
             else:
                 users[user_data['username']] = User.query.filter_by(username=user_data['username']).first()
 
-        # Create some sample transactions
+
         sample_transactions = [
             ('alice', 'bob', 100.00, 'Rent payment'),
             ('bob', 'charlie', 50.00, 'Dinner split'),
@@ -204,11 +204,11 @@ def init_db():
             ('charlie', 'alice', 145.00, 'Festival tickets')
         ]
 
-        # Only add transactions if none exist
+
         if Transaction.query.count() == 0:
             base_time = datetime.utcnow() - timedelta(days=30)
             for i, (sender, receiver, amount, description) in enumerate(sample_transactions):
-                # Create transaction with timestamps spread over the last 30 days
+
                 transaction_time = base_time + timedelta(days=i*2)
                 transaction = Transaction(
                     sender_id=users[sender].id,
@@ -221,7 +221,7 @@ def init_db():
                 )
                 db.session.add(transaction)
                 
-                # Update balances
+
                 users[sender].balance -= Decimal(str(amount))
                 users[receiver].balance += Decimal(str(amount))
 
