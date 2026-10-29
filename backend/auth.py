@@ -1,32 +1,23 @@
 from functools import wraps
-from flask import request, jsonify
+from flask import request, jsonify, current_app
 import jwt
 from models import User
 
 
 def _decode_token(token):
+    """Decodifica y VERIFICA un JWT.
+
+    Verifica siempre la firma y la expiracion con una lista fija de algoritmos
+    (HS256). Rechaza 'alg: none' y cualquier token cuya firma no sea valida.
+    Usa el secreto de configuracion de la app (cargado desde el entorno), el
+    mismo que se usa al emitir el token. Lanza excepcion si el token no es
+    valido; el llamador responde 401.
     """
-
-
-
-
-
-
-
-
-
-
-"""
-    try:
-
-        return jwt.decode(token, 'secret', algorithms=['HS256'])
-    except Exception:
-
-        return jwt.decode(
-            token,
-            options={'verify_signature': False, 'verify_exp': False},
-            algorithms=['HS256', 'none'],
-        )
+    return jwt.decode(
+        token,
+        current_app.config['SECRET_KEY'],
+        algorithms=['HS256'],
+    )
 
 
 def token_required(f):
@@ -34,13 +25,9 @@ def token_required(f):
     def decorated(*args, **kwargs):
         token = None
 
-
-        if 'Authorization' in request.headers:
-            auth_header = request.headers['Authorization']
-            try:
-                token = auth_header.split(" ")[1]
-            except IndexError:
-                token = auth_header
+        auth_header = request.headers.get('Authorization', '')
+        if auth_header.startswith('Bearer '):
+            token = auth_header[len('Bearer '):].strip()
 
         if not token:
             return jsonify({'error': 'Token is missing'}), 401
@@ -58,18 +45,11 @@ def token_required(f):
 
 
 def cookie_auth(f):
+    """Autenticacion por cookie de sesion HttpOnly.
+
+    Verifica el JWT de la cookie con firma y expiracion. Pensada para flujos
+    basados en cookies; el CSRF se mitiga con SameSite=Strict en la cookie.
     """
-
-
-
-
-
-
-
-
-
-
-"""
     @wraps(f)
     def decorated(*args, **kwargs):
         token = request.cookies.get('session_token')
