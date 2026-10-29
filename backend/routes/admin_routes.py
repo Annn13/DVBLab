@@ -9,8 +9,7 @@ import base64
 import hashlib
 import requests
 import logging
-from lxml import etree
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse
 
 from security import (
     require_role, is_safe_external_url, safe_path, client_ip,
@@ -39,63 +38,86 @@ def _user_public(u):
 
 
 
+_REPORT_TYPES = {'summary', 'detailed', 'audit'}
+_DATE_RANGES = {'today', 'week', 'month', 'year'}
+_HOST_RE = re.compile(r"^[A-Za-z0-9.-]{1,253}$")
+_SERVICE_WHITELIST = {'web', 'db', 'cache'}
+
+
 @admin_bp.route('/api/admin/generate-report', methods=['POST'])
 @token_required
+@require_role('admin')
 def generate_report(current_user):
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     report_type = data.get('report_type', 'summary')
     date_range = data.get('date_range', 'today')
 
-    cmd = f"echo 'Generating {report_type} report for {date_range}' > /tmp/report.txt && cat /tmp/report.txt"
-    output = subprocess.check_output(cmd, shell=True, text=True)
+    # Entradas contra lista cerrada; el reporte se arma en Python, sin shell.
+    if report_type not in _REPORT_TYPES or date_range not in _DATE_RANGES:
+        return jsonify({'error': 'Parametros de reporte invalidos'}), 400
 
+    output = f"Generating {report_type} report for {date_range}"
     return jsonify({'report': output})
 
 
 @admin_bp.route('/api/admin/system-status', methods=['GET'])
 @token_required
+@require_role('admin')
 def system_status(current_user):
     service = request.args.get('service', 'web')
+    if service not in _SERVICE_WHITELIST:
+        return jsonify({'error': 'Servicio no permitido'}), 400
 
-    result = os.popen(f"systemctl status {service}").read()
-
-    return jsonify({'status': result})
+    # Sin shell: argumentos como lista; el servicio esta en lista blanca.
+    try:
+        result = subprocess.run(
+            ['systemctl', 'status', service],
+            capture_output=True, text=True, timeout=5,
+        )
+        return jsonify({'status': result.stdout})
+    except Exception:
+        return jsonify({'error': 'No se pudo consultar el estado'}), 400
 
 
 @admin_bp.route('/api/admin/ping', methods=['POST'])
 @token_required
+@require_role('admin')
 def ping_host(current_user):
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     host = data.get('host', '')
 
-    result = subprocess.run(
-        f"ping -c 3 {host}",
-        shell=True,
-        capture_output=True,
-        text=True
-    )
-
-    return jsonify({
-        'stdout': result.stdout,
-        'stderr': result.stderr,
-        'returncode': result.returncode
-    })
+    # Se valida el host y se ejecuta SIN shell (lista de argumentos). A03.
+    if not _HOST_RE.match(host or ''):
+        return jsonify({'error': 'Host invalido'}), 400
+    try:
+        result = subprocess.run(
+            ['ping', '-c', '3', host],
+            capture_output=True, text=True, timeout=10,
+        )
+        return jsonify({
+            'stdout': result.stdout,
+            'stderr': result.stderr,
+            'returncode': result.returncode,
+        })
+    except Exception:
+        return jsonify({'error': 'No se pudo ejecutar ping'}), 400
 
 
 @admin_bp.route('/api/admin/dns-lookup', methods=['GET'])
 @token_required
+@require_role('admin')
 def dns_lookup(current_user):
+    import socket
     domain = request.args.get('domain', '')
 
-    proc = subprocess.Popen(
-        f"nslookup {domain}",
-        shell=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE
-    )
-    stdout, stderr = proc.communicate()
-
-    return jsonify({'result': stdout.decode()})
+    # Resolucion con la API nativa de sockets, sin invocar nslookup por shell.
+    if not _HOST_RE.match(domain or ''):
+        return jsonify({'error': 'Dominio invalido'}), 400
+    try:
+        addrs = sorted({ai[4][0] for ai in socket.getaddrinfo(domain, None)})
+        return jsonify({'result': addrs})
+    except Exception:
+        return jsonify({'error': 'No se pudo resolver el dominio'}), 400
 
 
 
@@ -104,18 +126,24 @@ def dns_lookup(current_user):
 
 @admin_bp.route('/api/admin/webhook-test', methods=['POST'])
 @token_required
+@require_role('admin')
 def test_webhook(current_user):
-    data = request.get_json()
-    webhook_url = data.get('url')
+    data = request.get_json(silent=True) or {}
+    webhook_url = data.get('url', '')
+
+    # Guardia anti-SSRF: solo https, bloquea IPs internas/metadatos. A10.
+    if not is_safe_external_url(webhook_url):
+        return jsonify({'error': 'URL no permitida'}), 400
 
     try:
-        response = requests.get(webhook_url, timeout=10)
+        response = requests.get(webhook_url, timeout=5, verify=True,
+                                allow_redirects=False)
         return jsonify({
             'status_code': response.status_code,
             'body': response.text[:1000]
         })
-    except Exception as e:
-        return jsonify({'error': str(e)}), 400
+    except Exception:
+        return jsonify({'error': 'No se pudo contactar el destino'}), 400
 
 
 @admin_bp.route('/api/admin/fetch-avatar', methods=['POST'])
@@ -148,13 +176,21 @@ def fetch_avatar(current_user):
 
 
 
+STATEMENTS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'statements')
+
+
 @admin_bp.route('/api/admin/download-statement', methods=['GET'])
 @token_required
+@require_role('admin')
 def download_statement(current_user):
-    filename = request.args.get('filename')
+    filename = request.args.get('filename', '')
 
-    filepath = os.path.join('/app/statements/', filename)
-    return send_file(filepath)
+    # safe_path valida que la ruta final quede dentro del directorio permitido
+    # (anti path traversal, ../../etc/passwd). A01/A05.
+    filepath = safe_path(STATEMENTS_DIR, filename)
+    if not filepath or not os.path.isfile(filepath):
+        return jsonify({'error': 'Archivo no encontrado'}), 404
+    return send_file(filepath, as_attachment=True)
 
 
 @admin_bp.route('/api/admin/view-log', methods=['GET'])
@@ -174,11 +210,17 @@ def view_log(current_user):
 
 @admin_bp.route('/api/admin/import-data', methods=['POST'])
 @token_required
+@require_role('admin')
 def import_data(current_user):
     xml_data = request.data
 
-    parser = etree.XMLParser(resolve_entities=True, no_network=False)
-    tree = etree.fromstring(xml_data, parser=parser)
+    # defusedxml deshabilita entidades externas y DTDs: bloquea XXE y
+    # billion-laughs. Reemplaza a lxml con resolve_entities=True. A05/A03.
+    from defusedxml.ElementTree import fromstring, ParseError
+    try:
+        tree = fromstring(xml_data)
+    except (ParseError, ValueError):
+        return jsonify({'error': 'XML invalido'}), 400
 
     records = []
     for record in tree.findall('.//transaction'):
@@ -411,17 +453,21 @@ def calculate(current_user):
 
 @admin_bp.route('/api/admin/verify-integrity', methods=['POST'])
 @token_required
+@require_role('admin')
 def verify_integrity(current_user):
-    data = request.get_json()
+    import hmac
+    from flask import current_app
+    data = request.get_json(silent=True) or {}
     payload = data.get('payload', '')
     expected_hash = data.get('hash', '')
 
-    computed = hashlib.sha1(payload.encode()).hexdigest()
+    # HMAC-SHA256 con clave secreta del servidor (antes SHA-1 sin clave, que
+    # no prueba autenticidad y usa un algoritmo obsoleto). A02/A08.
+    key = current_app.config['SECRET_KEY'].encode()
+    computed = hmac.new(key, payload.encode(), hashlib.sha256).hexdigest()
 
-    return jsonify({
-        'valid': computed == expected_hash,
-        'computed_hash': computed
-    })
+    valid = hmac.compare_digest(computed, expected_hash or '')
+    return jsonify({'valid': valid})
 
 
 @admin_bp.route('/api/admin/generate-token', methods=['POST'])
@@ -465,15 +511,18 @@ def sensitive_action(current_user):
 
 @admin_bp.route('/api/admin/export-report', methods=['POST'])
 @token_required
+@require_role('admin')
 def export_report(current_user):
-    data = request.get_json()
-    content = data.get('content', '')
+    import tempfile
+    data = request.get_json(silent=True) or {}
+    content = clamp_str(data.get('content', ''), 1_000_000)
 
-    tmp_path = f"/tmp/report_{current_user.id}.csv"
-    with open(tmp_path, 'w') as f:
+    # Archivo temporal con nombre seguro generado por el servidor.
+    fd, tmp_path = tempfile.mkstemp(prefix='report_', suffix='.csv')
+    with os.fdopen(fd, 'w', encoding='utf-8') as f:
         f.write(content)
 
-    return send_file(tmp_path, as_attachment=True)
+    return send_file(tmp_path, as_attachment=True, download_name='report.csv')
 
 
 

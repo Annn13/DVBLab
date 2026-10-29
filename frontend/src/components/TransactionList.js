@@ -73,6 +73,26 @@ const TransactionList = ({ userId }) => {
     fetchTransactions();
   };
 
+  // El recibo ahora exige autenticacion: se solicita con el token y se abre
+  // como blob en una pestana nueva, en vez de un enlace directo (que daria 401).
+  const viewReceipt = async (id) => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/transactions/${id}/receipt`, {
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+      });
+      if (!response.ok) {
+        setError('No se pudo abrir el recibo');
+        return;
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      window.open(url, '_blank', 'noreferrer');
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+    } catch (e) {
+      setError('No se pudo abrir el recibo');
+    }
+  };
+
   if (loading && !isSearching) {
     return <div className="text-center py-4">Loading transactions...</div>;
   }
@@ -165,14 +185,13 @@ const TransactionList = ({ userId }) => {
                     
 
 
-                    <a
-                      href={`${API_BASE_URL}/api/transactions/${transaction.id}/receipt`}
-                      target="_blank"
-                      rel="noreferrer"
+                    <button
+                      type="button"
+                      onClick={() => viewReceipt(transaction.id)}
                       className="text-blue-600 hover:underline"
                     >
                       View
-                    </a>
+                    </button>
                   </td>
                 </tr>
               ))
