@@ -6,18 +6,21 @@ from routes.transaction_routes import transaction_bp
 from routes.admin_routes import admin_bp
 from routes.upload_routes import upload_bp
 import os
+import logging
+from logging.handlers import RotatingFileHandler
 from decimal import Decimal
 from datetime import datetime, timedelta
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
 import sqlite3
 
+from config import Config
+from extensions import limiter
+
 app = Flask(__name__)
 
-
-app.config['SECRET_KEY'] = 'supersecret'
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///vulnerable_bank.db'
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+# Configuracion leida del entorno; el secreto ya NO esta en el codigo.
+app.config.from_object(Config)
 app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
     'connect_args': {
         'timeout': 10,
@@ -28,6 +31,34 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
     'pool_pre_ping': True,
     'pool_recycle': 3600
 }
+
+# CORS restringido a la lista blanca de origenes (no se refleja cualquier Origin).
+CORS(
+    app,
+    origins=app.config['CORS_ORIGINS'],
+    supports_credentials=True,
+    allow_headers=['Content-Type', 'Authorization'],
+    methods=['GET', 'PUT', 'POST', 'DELETE', 'OPTIONS'],
+)
+
+# Rate limiting global (Modulo 1: resistencia del login / fuerza bruta).
+limiter.init_app(app)
+
+# ---------------------------------------------------------------------------
+# Logging estructurado de auditoria hacia audit.log con rotacion (Modulo 4).
+# ---------------------------------------------------------------------------
+_log_dir = os.path.join(os.path.dirname(__file__), 'logs')
+os.makedirs(_log_dir, exist_ok=True)
+_audit_handler = RotatingFileHandler(
+    os.path.join(_log_dir, 'audit.log'), maxBytes=5 * 1024 * 1024, backupCount=5
+)
+_audit_handler.setFormatter(logging.Formatter(
+    '{"ts":"%(asctime)s","level":"%(levelname)s","logger":"%(name)s","msg":"%(message)s"}'
+))
+audit_logger = logging.getLogger('dvbank.audit')
+audit_logger.setLevel(logging.INFO)
+audit_logger.addHandler(_audit_handler)
+audit_logger.propagate = False
 
 
 @event.listens_for(Engine, "connect")
@@ -47,14 +78,16 @@ def set_sqlite_pragma(dbapi_connection, connection_record):
 
 
 @app.after_request
-def after_request(response):
-
-    origin = request.headers.get('Origin')
-    if origin:
-        response.headers.add('Access-Control-Allow-Origin', origin)
-        response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
-        response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
-        response.headers.add('Access-Control-Allow-Credentials', 'true')
+def set_security_headers(response):
+    # Cabeceras de seguridad para el navegador (defensa en profundidad anti-XSS,
+    # clickjacking y sniffing de tipos). El CORS lo gestiona flask_cors arriba.
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'DENY'
+    response.headers['Referrer-Policy'] = 'no-referrer'
+    response.headers['Content-Security-Policy'] = (
+        "default-src 'self'; frame-ancestors 'none'; object-src 'none'; "
+        "base-uri 'self'"
+    )
     return response
 
 
@@ -69,12 +102,14 @@ app.register_blueprint(upload_bp)
 
 @app.errorhandler(404)
 def not_found_error(error):
-    return jsonify({'error': str(error)}), 404
+    return jsonify({'error': 'Recurso no encontrado'}), 404
 
 @app.errorhandler(500)
 def internal_error(error):
     db.session.rollback()
-    return jsonify({'error': str(error)}), 500
+    # No se filtra el detalle interno al cliente; se registra para diagnostico.
+    audit_logger.error(f"internal_error path={request.path}")
+    return jsonify({'error': 'Error interno del servidor'}), 500
 
 
 def init_db():
@@ -85,7 +120,7 @@ def init_db():
         test_users = [
             {
                 'username': 'alice',
-                'password': 'password123',
+                'password': 'Dvbank#Demo2026',
                 'balance': 5000.00,
                 'email': 'alice@bank.com',
                 'profile': {
@@ -99,7 +134,7 @@ def init_db():
             },
             {
                 'username': 'bob',
-                'password': 'password123',
+                'password': 'Dvbank#Demo2026',
                 'balance': 3000.00,
                 'email': 'bob@bank.com',
                 'profile': {
@@ -113,7 +148,7 @@ def init_db():
             },
             {
                 'username': 'charlie',
-                'password': 'password123',
+                'password': 'Dvbank#Demo2026',
                 'balance': 2500.00,
                 'email': 'charlie@bank.com',
                 'profile': {
@@ -127,7 +162,7 @@ def init_db():
             },
             {
                 'username': 'dave',
-                'password': 'password123',
+                'password': 'Dvbank#Demo2026',
                 'balance': 4000.00,
                 'email': 'dave@bank.com',
                 'profile': {
@@ -141,7 +176,7 @@ def init_db():
             },
             {
                 'username': 'eve',
-                'password': 'password123',
+                'password': 'Dvbank#Demo2026',
                 'balance': 1500.00,
                 'email': 'eve@bank.com',
                 'profile': {
@@ -155,7 +190,7 @@ def init_db():
             },
             {
                 'username': 'frank',
-                'password': 'password123',
+                'password': 'Dvbank#Demo2026',
                 'balance': 3500.00,
                 'email': 'frank@bank.com',
                 'profile': {
@@ -229,4 +264,6 @@ def init_db():
 
 if __name__ == '__main__':
     init_db()
-    app.run(host='0.0.0.0', debug=True, port=5000) 
+    debug = os.environ.get('FLASK_DEBUG', '0') == '1'
+    host = os.environ.get('FLASK_RUN_HOST', '127.0.0.1')
+    app.run(host=host, debug=debug, port=5000)
