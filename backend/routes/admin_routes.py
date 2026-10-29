@@ -4,28 +4,34 @@ from datetime import datetime
 from auth import token_required
 import subprocess
 import os
-import pickle
+import re
 import base64
+import hashlib
 import requests
 import logging
-import xml.etree.ElementTree as ET
 from lxml import etree
-import hashlib
+from urllib.parse import urlparse, urljoin
+
+from security import (
+    require_role, is_safe_external_url, safe_path, client_ip,
+    clamp_str, valid_email,
+)
 
 admin_bp = Blueprint('admin', __name__)
 
-
-ADMIN_API_KEY = "sk-live-4f3c2e1d0a9b8c7d6e5f4a3b2c1d0e9f"
-AWS_ACCESS_KEY = "AKIAIOSFODNN7EXAMPLE"
-AWS_SECRET_KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-STRIPE_SECRET_KEY = "sk_test_FaKeKeyDoNotUse1234567890abc"
-DATABASE_PASSWORD = "pr0duction_p@ssw0rd!"
-SENDGRID_API_KEY = "SG.aBcDeFgHiJkLmNoPqRsTuV.WxYzAbCdEfGhIjKlMnOpQrStUvWxYz012345"
-GITHUB_TOKEN = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef12"
-JWT_PRIVATE_KEY = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
-SLACK_WEBHOOK = "https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXX"
-
 logger = logging.getLogger(__name__)
+
+
+def _user_public(u):
+    """Serializa un usuario SIN exponer credenciales (hash, reset_token)."""
+    return {
+        'id': u.id,
+        'username': u.username,
+        'email': u.email,
+        'balance': float(u.balance),
+        'role': u.role,
+        'profile': u.get_profile(),
+    }
 
 
 
@@ -114,13 +120,27 @@ def test_webhook(current_user):
 
 @admin_bp.route('/api/admin/fetch-avatar', methods=['POST'])
 @token_required
+@require_role('admin')
 def fetch_avatar(current_user):
-    data = request.get_json()
-    avatar_url = data.get('avatar_url')
+    data = request.get_json(silent=True) or {}
+    avatar_url = data.get('avatar_url', '')
 
-    response = requests.get(avatar_url, verify=False)
-    avatar_data = base64.b64encode(response.content).decode('utf-8')
+    # Guardia anti-SSRF: solo https, bloquea IPs internas/metadatos, TLS verificado.
+    if not is_safe_external_url(avatar_url):
+        return jsonify({'error': 'URL no permitida'}), 400
 
+    try:
+        response = requests.get(avatar_url, timeout=5, verify=True,
+                                stream=True, allow_redirects=False)
+        content = response.raw.read(1_000_000, decode_content=True)  # limite 1 MB
+    except Exception:
+        return jsonify({'error': 'No se pudo obtener el recurso'}), 400
+
+    ctype = response.headers.get('Content-Type', '')
+    if not ctype.startswith('image/'):
+        return jsonify({'error': 'El recurso no es una imagen'}), 400
+
+    avatar_data = base64.b64encode(content).decode('utf-8')
     return jsonify({'avatar_base64': avatar_data})
 
 
@@ -178,26 +198,34 @@ def import_data(current_user):
 
 @admin_bp.route('/api/admin/import-session', methods=['POST'])
 @token_required
+@require_role('admin')
 def import_session(current_user):
-    data = request.get_json()
-    session_data = data.get('session_data')
+    data = request.get_json(silent=True) or {}
+    session_data = data.get('session_data', '')
 
-    decoded = base64.b64decode(session_data)
-    session = pickle.loads(decoded)
+    # Se usa JSON en vez de pickle: pickle.loads sobre datos del cliente es RCE.
+    try:
+        decoded = base64.b64decode(session_data)
+        import json
+        session = json.loads(decoded)
+    except Exception:
+        return jsonify({'error': 'Datos de sesion invalidos'}), 400
 
-    return jsonify({'session': str(session)})
+    return jsonify({'session': session})
 
 
 @admin_bp.route('/api/admin/export-session', methods=['POST'])
 @token_required
 def export_session(current_user):
+    import json
     session_info = {
         'user_id': current_user.id,
         'username': current_user.username,
         'role': current_user.role,
         'timestamp': datetime.utcnow().isoformat()
     }
-    serialized = base64.b64encode(pickle.dumps(session_info)).decode('utf-8')
+    # Serializacion segura con JSON (no pickle).
+    serialized = base64.b64encode(json.dumps(session_info).encode()).decode('utf-8')
     return jsonify({'session_data': serialized})
 
 
@@ -207,18 +235,27 @@ def export_session(current_user):
 
 @admin_bp.route('/api/admin/users/<int:user_id>', methods=['PUT'])
 @token_required
+@require_role('admin')
 def update_user(current_user, user_id):
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     user = User.query.get(user_id)
 
     if not user:
         return jsonify({'error': 'User not found'}), 404
 
-    for key, value in data.items():
-        setattr(user, key, value)
+    # Lista blanca de campos editables: evita mass assignment (p. ej. subir
+    # el propio role a 'admin' o alterar el balance). OWASP A08/A01.
+    if 'email' in data:
+        if not valid_email(data['email']):
+            return jsonify({'error': 'Correo invalido'}), 400
+        user.email = data['email']
+    if 'role' in data:
+        if data['role'] not in ('user', 'admin', 'auditor'):
+            return jsonify({'error': 'Rol invalido'}), 400
+        user.role = data['role']
 
     db.session.commit()
-    return jsonify({'message': 'User updated', 'user': user.to_dict()})
+    return jsonify({'message': 'User updated', 'user': _user_public(user)})
 
 
 
@@ -227,12 +264,15 @@ def update_user(current_user, user_id):
 
 @admin_bp.route('/api/admin/preview-email', methods=['POST'])
 @token_required
+@require_role('admin')
 def preview_email(current_user):
-    data = request.get_json()
-    template = data.get('template', '')
-    recipient = data.get('recipient', '')
+    data = request.get_json(silent=True) or {}
+    recipient = clamp_str(data.get('recipient', ''), 254)
 
-    rendered = render_template_string(template, recipient=recipient)
+    # NO se renderiza una plantilla provista por el cliente (eso es SSTI/RCE).
+    # Se usa una plantilla fija del servidor con la variable autoescapada.
+    FIXED_TEMPLATE = "Hola {{ recipient }}, este es un correo de prueba de DVBank."
+    rendered = render_template_string(FIXED_TEMPLATE, recipient=recipient)
 
     return jsonify({'preview': rendered})
 
@@ -245,6 +285,11 @@ def preview_email(current_user):
 def open_redirect():
     target = request.args.get('url', '/')
 
+    # Solo se permiten redirecciones internas (rutas relativas del mismo sitio).
+    # Se bloquean URLs absolutas y esquemas peligrosos (open redirect, A01).
+    parsed = urlparse(target)
+    if parsed.scheme or parsed.netloc or not target.startswith('/') or target.startswith('//'):
+        return redirect('/')
     return redirect(target)
 
 
@@ -279,27 +324,22 @@ def create_audit_entry(current_user):
 
 @admin_bp.route('/api/admin/users', methods=['GET'])
 @token_required
+@require_role('admin')
 def list_all_users(current_user):
     users = User.query.all()
-    return jsonify([{
-        'id': u.id,
-        'username': u.username,
-        'email': u.email,
-        'balance': float(u.balance),
-        'role': u.role,
-        'password_hash': u.password_hash,
-        'profile': u.get_profile()
-    } for u in users])
+    # NO se devuelve password_hash ni reset_token en ninguna respuesta.
+    return jsonify([_user_public(u) for u in users])
 
 
 @admin_bp.route('/api/admin/users/<int:user_id>/delete', methods=['DELETE'])
 @token_required
+@require_role('admin')
 def delete_user(current_user, user_id):
     user = User.query.get(user_id)
     if user:
         db.session.delete(user)
         db.session.commit()
-        return jsonify({'message': f'User {user.username} deleted'})
+        return jsonify({'message': 'User deleted'})
     return jsonify({'error': 'User not found'}), 404
 
 
@@ -309,17 +349,18 @@ def delete_user(current_user, user_id):
 
 @admin_bp.route('/api/admin/search-users', methods=['GET'])
 @token_required
+@require_role('admin')
 def search_users_regex(current_user):
-    import re
-    pattern = request.args.get('pattern', '')
+    # No se acepta una expresion regular del cliente (ReDoS). Se busca por
+    # subcadena con consulta parametrizada, termino acotado y paginacion.
+    term = clamp_str(request.args.get('pattern', ''), 50)
+    page = request.args.get('page', 1, type=int)
+    per_page = 25
 
-    users = User.query.all()
-    matches = []
-    for user in users:
-        if re.match(pattern, user.username):
-            matches.append(user.to_dict())
+    query = User.query.filter(User.username.ilike(f"%{term}%"))
+    users = query.limit(per_page).offset((max(page, 1) - 1) * per_page).all()
 
-    return jsonify(matches)
+    return jsonify([_user_public(u) for u in users])
 
 
 
@@ -329,40 +370,39 @@ def search_users_regex(current_user):
 
 @admin_bp.route('/api/admin/calculate', methods=['POST'])
 @token_required
+@require_role('admin')
 def calculate(current_user):
-    data = request.get_json()
-    expression = data.get('expression', '')
+    data = request.get_json(silent=True) or {}
+    expression = clamp_str(data.get('expression', ''), 100)
 
+    # eval() sobre entrada del cliente es RCE. Se evalua solo aritmetica simple
+    # con un parser restringido a numeros y operadores + - * / ( ).
+    if not re.fullmatch(r"[0-9+\-*/(). %]+", expression or ""):
+        return jsonify({'error': 'Expresion no permitida'}), 400
     try:
-        result = eval(expression)
+        import ast
+        import operator as op
+        ops = {ast.Add: op.add, ast.Sub: op.sub, ast.Mult: op.mul,
+               ast.Div: op.truediv, ast.Mod: op.mod, ast.USub: op.neg}
+
+        def _eval(node):
+            if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+                return node.value
+            if isinstance(node, ast.BinOp) and type(node.op) in ops:
+                return ops[type(node.op)](_eval(node.left), _eval(node.right))
+            if isinstance(node, ast.UnaryOp) and type(node.op) in ops:
+                return ops[type(node.op)](_eval(node.operand))
+            raise ValueError("nodo no permitido")
+
+        result = _eval(ast.parse(expression, mode='eval').body)
         return jsonify({'result': str(result)})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 400
+    except Exception:
+        return jsonify({'error': 'Expresion invalida'}), 400
 
 
-@admin_bp.route('/api/admin/run-script', methods=['POST'])
-@token_required
-def run_script(current_user):
-    data = request.get_json()
-    script = data.get('script', '')
-
-    exec_globals = {}
-    exec(script, exec_globals)
-
-    return jsonify({'output': str(exec_globals.get('result', 'No result'))})
-
-
-@admin_bp.route('/api/admin/format-data', methods=['POST'])
-@token_required
-def format_data(current_user):
-    data = request.get_json()
-    format_string = data.get('format', '')
-
-    code = compile(format_string, '<string>', 'exec')
-    namespace = {'data': data}
-    exec(code, namespace)
-
-    return jsonify({'formatted': str(namespace.get('output', ''))})
+# Endpoints eliminados: /api/admin/run-script y /api/admin/format-data ejecutaban
+# codigo Python arbitrario del cliente (exec), lo que es RCE directo y no tiene
+# un caso de uso legitimo. Se retiran por completo (reduccion de superficie).
 
 
 
@@ -386,12 +426,12 @@ def verify_integrity(current_user):
 
 @admin_bp.route('/api/admin/generate-token', methods=['POST'])
 @token_required
+@require_role('admin')
 def generate_api_token(current_user):
-    data = request.get_json()
-    seed = data.get('seed', '')
-
-    token = hashlib.md5(f"{seed}{current_user.id}".encode()).hexdigest()
-
+    # Token aleatorio criptograficamente seguro (no derivado de MD5(seed+id),
+    # que era predecible). OWASP A02.
+    import secrets
+    token = secrets.token_urlsafe(32)
     return jsonify({'api_token': token})
 
 
@@ -399,16 +439,9 @@ def generate_api_token(current_user):
 
 
 
-@admin_bp.route('/api/admin/master-login', methods=['POST'])
-@token_required
-def master_login(current_user):
-    data = request.get_json()
-    master_password = data.get('password', '')
-
-    if master_password == "MasterAdmin@2024!":
-        return jsonify({'message': 'Admin access granted', 'admin': True})
-
-    return jsonify({'error': 'Invalid master password'}), 403
+# Endpoint eliminado: /api/admin/master-login era una puerta trasera con una
+# contrasena maestra escrita en el codigo. Se retira por completo. El acceso
+# administrativo se obtiene solo con el rol 'admin' asignado en la base de datos.
 
 
 
@@ -417,13 +450,14 @@ def master_login(current_user):
 
 @admin_bp.route('/api/admin/sensitive-action', methods=['POST'])
 @token_required
+@require_role('admin')
 def sensitive_action(current_user):
-    assert current_user.role == 'admin', "Only admins can perform this action"
+    # La autorizacion se hace con require_role, NUNCA con assert (assert se
+    # desactiva con python -O y dejaria el control sin efecto). OWASP A01.
+    data = request.get_json(silent=True) or {}
+    action = clamp_str(data.get('action', ''), 50)
 
-    data = request.get_json()
-    action = data.get('action', '')
-
-    return jsonify({'message': f'Action {action} performed successfully'})
+    return jsonify({'message': 'Action performed successfully'})
 
 
 

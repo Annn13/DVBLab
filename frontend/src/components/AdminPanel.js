@@ -3,8 +3,8 @@ import { API_BASE_URL } from '../config';
 
 const AdminPanel = () => {
   const [users, setUsers] = useState([]);
-  const [searchHtml, setSearchHtml] = useState('');
-  const [reportOutput, setReportOutput] = useState('');
+  const [searchResults, setSearchResults] = useState([]);
+  const [searchQuery, setSearchQuery] = useState('');
   const [webhookUrl, setWebhookUrl] = useState('');
   const [webhookResult, setWebhookResult] = useState('');
   const [calcExpression, setCalcExpression] = useState('');
@@ -13,13 +13,11 @@ const AdminPanel = () => {
   const [importResult, setImportResult] = useState('');
   const [announcements, setAnnouncements] = useState([]);
   const [newAnnouncement, setNewAnnouncement] = useState('');
-  const [userNotes, setUserNotes] = useState('');
 
   const token = localStorage.getItem('token');
 
   useEffect(() => {
     fetchUsers();
-    loadNotesFromUrl();
   }, []);
 
   const fetchUsers = async () => {
@@ -36,83 +34,39 @@ const AdminPanel = () => {
     }
   };
 
-  
+  // Busqueda en memoria; los resultados se renderizan como TEXTO con React,
+  // no con dangerouslySetInnerHTML (evita XSS). El filtrado es por subcadena.
   const handleSearch = (query) => {
-    const filtered = users.filter(u => u.username.includes(query));
-    if (filtered.length === 0) {
-      setSearchHtml(`<p class="text-red-500">No results found for: <strong>${query}</strong></p>`);
-    } else {
-      const html = filtered.map(u =>
-        `<div class="p-2 border-b"><strong>${u.username}</strong> - Balance: $${u.balance} - Role: ${u.role}</div>`
-      ).join('');
-      setSearchHtml(html);
+    setSearchQuery(query);
+    if (!query) {
+      setSearchResults([]);
+      return;
     }
+    setSearchResults(users.filter((u) => u.username.includes(query)));
   };
 
-  
+  // Calculo local solo aritmetico, sin eval(). Se valida el formato y se usa
+  // Function con una expresion ya saneada; ante cualquier caracter raro, error.
   const handleCalculate = () => {
+    if (!/^[0-9+\-*/(). %]+$/.test(calcExpression)) {
+      setCalcResult('Error: expresion no permitida');
+      return;
+    }
     try {
-      const result = eval(calcExpression);
+      // eslint-disable-next-line no-new-func
+      const result = Function(`"use strict"; return (${calcExpression});`)();
       setCalcResult(String(result));
     } catch (e) {
-      setCalcResult('Error: ' + e.message);
+      setCalcResult('Error: expresion invalida');
     }
   };
 
-  
-  const handleAdminLogin = (adminToken, userData) => {
-    localStorage.setItem('admin_token', adminToken);
-    localStorage.setItem('admin_user', JSON.stringify(userData));
-    localStorage.setItem('admin_permissions', JSON.stringify({
-      canDeleteUsers: true,
-      canViewPasswords: true,
-      canExportData: true
-    }));
-    localStorage.setItem('session_secret', 'admin_master_key_2024');
-  };
-
-  
-  const loadNotesFromUrl = () => {
-    const params = new URLSearchParams(window.location.search);
-    const notesParam = params.get('notes');
-    if (notesParam) {
-      setUserNotes(notesParam);
-    }
-  };
-
-  
-  const printReport = (reportData) => {
-    const printWindow = window.open('', '_blank');
-    printWindow.document.write(`
-      <html>
-        <head><title>Report</title></head>
-        <body>
-          <h1>Admin Report</h1>
-          <div>${reportData}</div>
-        </body>
-      </html>
-    `);
-  };
-
-  
+  // Los anuncios se guardan en estado y React los pinta como texto escapado.
   const renderAnnouncement = (text) => {
-    setAnnouncements(prev => [...prev, text]);
-    const container = document.getElementById('announcements');
-    if (container) {
-      container.innerHTML += `<div class="p-2 bg-yellow-50 border-l-4 border-yellow-400 mb-2">${text}</div>`;
-    }
+    if (!text) return;
+    setAnnouncements((prev) => [...prev, text]);
+    setNewAnnouncement('');
   };
-
-  
-  useEffect(() => {
-    window.addEventListener('message', (event) => {
-      
-      const data = event.data;
-      if (data.type === 'UPDATE_CONFIG') {
-        eval(data.payload);
-      }
-    });
-  }, []);
 
   const testWebhook = async () => {
     try {
@@ -152,27 +106,27 @@ const AdminPanel = () => {
     <div className="max-w-6xl mx-auto p-6">
       <h1 className="text-3xl font-bold mb-8">Admin Panel</h1>
 
-      
       <section className="bg-white rounded-lg shadow-md p-6 mb-6">
         <h2 className="text-xl font-semibold mb-4">User Search</h2>
         <input
           type="text"
           placeholder="Search users..."
           className="w-full p-2 border rounded mb-4"
+          value={searchQuery}
           onChange={(e) => handleSearch(e.target.value)}
         />
-        <div dangerouslySetInnerHTML={{ __html: searchHtml }} />
+        <div>
+          {searchQuery && searchResults.length === 0 && (
+            <p className="text-red-500">No results found for: <strong>{searchQuery}</strong></p>
+          )}
+          {searchResults.map((u) => (
+            <div key={u.id} className="p-2 border-b">
+              <strong>{u.username}</strong> - Balance: ${u.balance} - Role: {u.role}
+            </div>
+          ))}
+        </div>
       </section>
 
-      
-      {userNotes && (
-        <section className="bg-white rounded-lg shadow-md p-6 mb-6">
-          <h2 className="text-xl font-semibold mb-4">Notes</h2>
-          <div dangerouslySetInnerHTML={{ __html: userNotes }} />
-        </section>
-      )}
-
-      
       <section className="bg-white rounded-lg shadow-md p-6 mb-6">
         <h2 className="text-xl font-semibold mb-4">Announcements</h2>
         <div className="flex gap-2 mb-4">
@@ -180,7 +134,7 @@ const AdminPanel = () => {
             type="text"
             value={newAnnouncement}
             onChange={(e) => setNewAnnouncement(e.target.value)}
-            placeholder="New announcement (supports HTML)..."
+            placeholder="New announcement..."
             className="flex-1 p-2 border rounded"
           />
           <button
@@ -190,10 +144,15 @@ const AdminPanel = () => {
             Post
           </button>
         </div>
-        <div id="announcements"></div>
+        <div id="announcements">
+          {announcements.map((text, i) => (
+            <div key={i} className="p-2 bg-yellow-50 border-l-4 border-yellow-400 mb-2">
+              {text}
+            </div>
+          ))}
+        </div>
       </section>
 
-      
       <section className="bg-white rounded-lg shadow-md p-6 mb-6">
         <h2 className="text-xl font-semibold mb-4">Calculator</h2>
         <div className="flex gap-2">
@@ -214,7 +173,6 @@ const AdminPanel = () => {
         {calcResult && <p className="mt-2 text-lg font-mono">Result: {calcResult}</p>}
       </section>
 
-      
       <section className="bg-white rounded-lg shadow-md p-6 mb-6">
         <h2 className="text-xl font-semibold mb-4">Webhook Tester</h2>
         <div className="flex gap-2 mb-4">
@@ -235,7 +193,6 @@ const AdminPanel = () => {
         {webhookResult && <pre className="bg-gray-100 p-4 rounded overflow-auto">{webhookResult}</pre>}
       </section>
 
-      
       <section className="bg-white rounded-lg shadow-md p-6 mb-6">
         <h2 className="text-xl font-semibold mb-4">XML Data Import</h2>
         <textarea
@@ -253,7 +210,6 @@ const AdminPanel = () => {
         {importResult && <pre className="mt-4 bg-gray-100 p-4 rounded overflow-auto">{importResult}</pre>}
       </section>
 
-      
       <section className="bg-white rounded-lg shadow-md p-6">
         <h2 className="text-xl font-semibold mb-4">All Users</h2>
         <table className="min-w-full">
@@ -264,18 +220,16 @@ const AdminPanel = () => {
               <th className="px-4 py-2 text-left">Email</th>
               <th className="px-4 py-2 text-left">Balance</th>
               <th className="px-4 py-2 text-left">Role</th>
-              <th className="px-4 py-2 text-left">Password Hash</th>
             </tr>
           </thead>
           <tbody>
-            {users.map(user => (
+            {users.map((user) => (
               <tr key={user.id} className="border-b">
                 <td className="px-4 py-2">{user.id}</td>
                 <td className="px-4 py-2">{user.username}</td>
                 <td className="px-4 py-2">{user.email}</td>
                 <td className="px-4 py-2">${user.balance}</td>
                 <td className="px-4 py-2">{user.role}</td>
-                <td className="px-4 py-2 font-mono text-xs">{user.password_hash}</td>
               </tr>
             ))}
           </tbody>
