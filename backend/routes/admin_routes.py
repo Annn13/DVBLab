@@ -13,12 +13,24 @@ from urllib.parse import urlparse
 
 from security import (
     require_role, is_safe_external_url, safe_path, client_ip,
-    clamp_str, valid_email,
+    clamp_str, valid_email, sanitize_log_value,
 )
 
 admin_bp = Blueprint('admin', __name__)
 
 logger = logging.getLogger(__name__)
+# Logger de auditoria estructurado (su handler con rotacion se configura en app.py).
+audit_logger = logging.getLogger('dvbank.audit')
+
+# Acciones de auditoria permitidas (lista cerrada, anti audit poisoning).
+_AUDIT_ACTIONS = {
+    'login', 'logout', 'transfer', 'password_change', 'profile_update',
+    'user_update', 'user_delete', 'report_export',
+}
+
+# Logs consultables, mapeados a rutas fijas (anti path traversal).
+LOGS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'logs')
+_ALLOWED_LOGS = {'audit': 'audit.log'}
 
 
 def _user_public(u):
@@ -195,12 +207,27 @@ def download_statement(current_user):
 
 @admin_bp.route('/api/admin/view-log', methods=['GET'])
 @token_required
+@require_role('auditor', 'admin')
 def view_log(current_user):
-    log_file = request.args.get('file', 'app.log')
+    # Solo rol auditor/admin. Se acepta un identificador de una lista cerrada,
+    # nunca un nombre de archivo libre (anti path traversal). A01/A05.
+    log_id = request.args.get('file', 'audit')
+    if log_id not in _ALLOWED_LOGS:
+        return jsonify({'error': 'Log no permitido'}), 400
 
-    with open(f"/var/log/{log_file}", 'r') as f:
-        content = f.read()
+    path = safe_path(LOGS_DIR, _ALLOWED_LOGS[log_id])
+    if not path or not os.path.isfile(path):
+        return jsonify({'log': ''})
 
+    # Se lee solo la cola del archivo para no volcar logs enormes.
+    with open(path, 'r', encoding='utf-8', errors='replace') as f:
+        content = f.read()[-100_000:]
+
+    # Se audita tambien la consulta a la bitacora.
+    audit_logger.info(
+        f'user={sanitize_log_value(current_user.username, 80)} '
+        f'action=view_log ip={client_ip()} log={log_id}'
+    )
     return jsonify({'log': content})
 
 
@@ -342,17 +369,28 @@ def open_redirect():
 @admin_bp.route('/api/admin/audit', methods=['POST'])
 @token_required
 def create_audit_entry(current_user):
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     action = data.get('action', '')
     details = data.get('details', '')
 
-    logger.info(f"AUDIT: User {current_user.username} performed action: {action} - Details: {details}")
+    # La accion se valida contra una lista cerrada; el detalle se sanea
+    # (sin saltos de linea ni caracteres de control) antes de registrarse,
+    # para impedir la inyeccion de entradas falsas en la bitacora. CWE-117.
+    if action not in _AUDIT_ACTIONS:
+        return jsonify({'error': 'Accion no permitida'}), 400
+    safe_details = sanitize_log_value(details, max_len=512)
+
+    # Se registra como campos estructurados, no interpolando texto libre.
+    audit_logger.info(
+        f'user={sanitize_log_value(current_user.username, 80)} '
+        f'action={action} ip={client_ip()} details={safe_details}'
+    )
 
     audit = AuditLog(
         user_id=current_user.id,
         action=action,
-        details=details,
-        ip_address=request.remote_addr
+        details=safe_details,
+        ip_address=client_ip(),
     )
     db.session.add(audit)
     db.session.commit()
@@ -530,15 +568,14 @@ def export_report(current_user):
 
 @admin_bp.route('/api/admin/dashboard-data', methods=['GET'])
 @token_required
+@require_role('admin')
 def dashboard_data(current_user):
     users_count = User.query.count()
     transactions_count = Transaction.query.count()
 
-    response = make_response(jsonify({
+    # Ya NO se devuelven secretos (api_key/aws_key estaban hardcoded y se
+    # filtraban por la API). Los secretos viven solo en variables de entorno. A05.
+    return jsonify({
         'users': users_count,
         'transactions': transactions_count,
-        'api_key': ADMIN_API_KEY,
-        'aws_key': AWS_ACCESS_KEY
-    }))
-
-    return response
+    })

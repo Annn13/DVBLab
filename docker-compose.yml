@@ -11,8 +11,13 @@ services:
       - ./backend:/app
     environment:
       - FLASK_APP=app.py
-      - FLASK_ENV=development
-      - SECRET_KEY=supersecret
+      # El secreto se toma del entorno del host (p. ej. archivo .env), ya no
+      # esta escrito en el repositorio. Debe definirse SECRET_KEY antes de
+      # levantar el contenedor. FLASK_DEBUG desactivado por defecto.
+      - FLASK_ENV=${FLASK_ENV:-production}
+      - SECRET_KEY=${SECRET_KEY:?Defina SECRET_KEY en el entorno/.env}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000}
+      - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-http://localhost:3000}
     restart: always
 
   frontend:
