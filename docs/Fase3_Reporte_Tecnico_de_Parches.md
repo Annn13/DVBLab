@@ -25,15 +25,16 @@ Repositorio: **https://github.com/Annn13/DVBLab**
 Flujo de PRs apilados (cada PR se fusiona sobre el anterior; su diff muestra solo su módulo):
 `main → seguridad/base → modulo1 → modulo2 → modulo3 → modulo4`.
 
-| Integrante | Módulo | Rama | Commit | Enlace al PR |
+| Integrante | Módulo | Rama | Commit | Pull Request |
 |---|---|---|---|---|
-| Jose Arrieta | 1 · Autenticación | `seguridad/modulo1-autenticacion` | `9f10f22` | _(completar nº de PR)_ |
-| Angie Aguilar | 2 · Gestión de Usuarios | `seguridad/modulo2-gestion-usuarios` | `4a6bf55` | _(completar nº de PR)_ |
-| Laura Alpízar | 3 · Operaciones | `seguridad/modulo3-operaciones` | `b45f723` | _(completar nº de PR)_ |
-| Melany Bustos | 4 · Auditoría y Logs | `seguridad/modulo4-auditoria-logs` | `d95e9dd` | _(completar nº de PR)_ |
+| Jose Arrieta | 1 · Autenticación | `seguridad/modulo1-autenticacion` | `9f10f22` | https://github.com/Annn13/DVBLab/pull/4 |
+| Angie Aguilar | 2 · Gestión de Usuarios | `seguridad/modulo2-gestion-usuarios` | `4a6bf55` | https://github.com/Annn13/DVBLab/pull/5 |
+| Laura Alpízar | 3 · Operaciones | `seguridad/modulo3-operaciones` | `b45f723` | https://github.com/Annn13/DVBLab/pull/6 |
+| Melany Bustos | 4 · Auditoría y Logs | `seguridad/modulo4-auditoria-logs` | `d95e9dd` | https://github.com/Annn13/DVBLab/pull/7 |
 
-Base compartida (`seguridad/base`, commit `fa9a80d`): `security.py`, `config.py`,
-`extensions.py`, `app.py`, `requirements.txt`.
+Base compartida (`seguridad/base`, commit `fa9a80d`, PR https://github.com/Annn13/DVBLab/pull/3):
+`security.py`, `config.py`, `extensions.py`, `app.py`, `requirements.txt`.
+Documentación: PR https://github.com/Annn13/DVBLab/pull/8.
 
 > **Trazabilidad individual:** los commits llevan como autor el nombre de cada responsable.
 > Para cumplir al 100 % la autoría individual, cada integrante debería **abrir su propio PR
