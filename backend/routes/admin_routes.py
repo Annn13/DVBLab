@@ -11,6 +11,7 @@ import logging
 import xml.etree.ElementTree as ET
 from lxml import etree
 import hashlib
+import re
 
 admin_bp = Blueprint('admin', __name__)
 
@@ -204,24 +205,52 @@ def export_session(current_user):
 
 
 
+# Modulo 2 - Vector 1 [A01/A08]: control de acceso roto + mass assignment.
+CAMPOS_PERMITIDOS = {'username', 'email'}
+EMAIL_RE = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
+
+def _validar_campo(key, value):
+    if not isinstance(value, str):
+        return False, f'{key} debe ser texto'
+    value = value.strip()
+    if key == 'username':
+        if not (3 <= len(value) <= 30):
+            return False, 'username debe tener entre 3 y 30 caracteres'
+        if not re.match(r'^[A-Za-z0-9_.-]+$', value):
+            return False, 'username tiene caracteres no permitidos'
+    if key == 'email':
+        if len(value) > 254 or not EMAIL_RE.match(value):
+            return False, 'email no tiene un formato valido'
+    return True, value
 
 @admin_bp.route('/api/admin/users/<int:user_id>', methods=['PUT'])
 @token_required
 def update_user(current_user, user_id):
-    data = request.get_json()
-    user = User.query.get(user_id)
+    if current_user.role != 'admin':
+        return jsonify({'error': 'Forbidden'}), 403
 
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({'error': 'Cuerpo invalido'}), 400
+
+    user = User.query.get(user_id)
     if not user:
         return jsonify({'error': 'User not found'}), 404
 
+    cambios = {}
     for key, value in data.items():
+        if key not in CAMPOS_PERMITIDOS:
+            continue
+        ok, resultado = _validar_campo(key, value)
+        if not ok:
+            return jsonify({'error': resultado}), 400
+        cambios[key] = resultado
+
+    for key, value in cambios.items():
         setattr(user, key, value)
 
     db.session.commit()
     return jsonify({'message': 'User updated', 'user': user.to_dict()})
-
-
-
 
 
 
