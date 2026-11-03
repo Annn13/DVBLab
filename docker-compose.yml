@@ -13,6 +13,7 @@ services:
       - FLASK_APP=app.py
       - FLASK_ENV=development
       - SECRET_KEY=supersecret
+      - FLASK_RUN_HOST=0.0.0.0
     restart: always
 
   frontend:
