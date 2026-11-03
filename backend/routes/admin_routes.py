@@ -205,7 +205,8 @@ def export_session(current_user):
 
 
 
-# Modulo 2 - Vector 1 [A01/A08]: control de acceso roto + mass assignment.
+# Modulo 2 - Vector 1 [A01/A08] y Vector 3 [A09]: control de acceso, whitelist,
+# validacion y registro de auditoria de la accion.
 CAMPOS_PERMITIDOS = {'username', 'email'}
 EMAIL_RE = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
 
@@ -223,10 +224,29 @@ def _validar_campo(key, value):
             return False, 'email no tiene un formato valido'
     return True, value
 
+def sanear_para_log(texto):
+    return re.sub(r'[\r\n\x00-\x1f]', '', str(texto))
+
+
+def _registrar_evento(current_user, user_id, action, details):
+    registro = AuditLog(
+        user_id=current_user.id,
+        action=action,
+        details=sanear_para_log(details),
+        ip_address=request.remote_addr,
+    )
+    db.session.add(registro)
+
+
 @admin_bp.route('/api/admin/users/<int:user_id>', methods=['PUT'])
 @token_required
 def update_user(current_user, user_id):
     if current_user.role != 'admin':
+        _registrar_evento(
+            current_user, user_id, 'update_user',
+            f"intento denegado sobre usuario {user_id}, rol insuficiente",
+        )
+        db.session.commit()
         return jsonify({'error': 'Forbidden'}), 403
 
     data = request.get_json(silent=True)
@@ -243,11 +263,21 @@ def update_user(current_user, user_id):
             continue
         ok, resultado = _validar_campo(key, value)
         if not ok:
+            _registrar_evento(
+                current_user, user_id, 'update_user',
+                f"intento fallido sobre usuario {user_id}, campo {key} invalido",
+            )
+            db.session.commit()
             return jsonify({'error': resultado}), 400
         cambios[key] = resultado
 
     for key, value in cambios.items():
         setattr(user, key, value)
+
+    _registrar_evento(
+        current_user, user_id, 'update_user',
+        f"edito al usuario {user_id}, campos: {', '.join(cambios.keys())}",
+    )
 
     db.session.commit()
     return jsonify({'message': 'User updated', 'user': user.to_dict()})
@@ -321,16 +351,30 @@ def list_all_users(current_user):
     } for u in users])
 
 
+# Modulo 2 - Vector 3 [A09] y N°8 [A01]: auditoria y control de acceso del borrado.
 @admin_bp.route('/api/admin/users/<int:user_id>/delete', methods=['DELETE'])
 @token_required
 def delete_user(current_user, user_id):
-    user = User.query.get(user_id)
-    if user:
-        db.session.delete(user)
+    if current_user.role != 'admin':
+        _registrar_evento(
+            current_user, user_id, 'delete_user',
+            f"intento denegado de borrar usuario {user_id}, rol insuficiente",
+        )
         db.session.commit()
-        return jsonify({'message': f'User {user.username} deleted'})
-    return jsonify({'error': 'User not found'}), 404
+        return jsonify({'error': 'Forbidden'}), 403
 
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+
+    nombre = user.username
+    db.session.delete(user)
+    _registrar_evento(
+        current_user, user_id, 'delete_user',
+        f"elimino al usuario {user_id}, nombre {nombre}",
+    )
+    db.session.commit()
+    return jsonify({'message': f'User {nombre} deleted'})
 
 
 
