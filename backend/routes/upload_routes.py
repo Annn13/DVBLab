@@ -1,8 +1,10 @@
-from flask import Blueprint, request, jsonify, Response
+from flask import Blueprint, request, jsonify, send_file
 from models import db
 from auth import token_required
 import os
-import mimetypes
+import uuid
+from PIL import Image
+from werkzeug.utils import safe_join
 
 upload_bp = Blueprint('upload', __name__)
 
@@ -12,13 +14,15 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 
 
+# Modulo 2 - Vector 2 [A03/A05]: XSS almacenado por subida de archivos.
+EXTENSIONES_PERMITIDAS = {'png', 'jpg', 'jpeg', 'gif'}
 
-
-
-
-
-
-
+TIPOS_POR_EXTENSION = {
+    'png': 'image/png',
+    'jpg': 'image/jpeg',
+    'jpeg': 'image/jpeg',
+    'gif': 'image/gif',
+}
 
 
 @upload_bp.route('/api/upload-avatar', methods=['POST'])
@@ -28,36 +32,35 @@ def upload_avatar(current_user):
         return jsonify({'error': 'No file provided'}), 400
 
     uploaded = request.files['file']
+    ext = uploaded.filename.rsplit('.', 1)[-1].lower()
+    if ext not in EXTENSIONES_PERMITIDAS:
+        return jsonify({'error': 'Tipo de archivo no permitido'}), 400
 
-    filename = uploaded.filename or 'upload.bin'
-    dest = os.path.join(UPLOAD_DIR, filename)
+    try:
+        Image.open(uploaded.stream).verify()
+        uploaded.stream.seek(0)
+    except Exception:
+        return jsonify({'error': 'El archivo no es una imagen valida'}), 400
 
-    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    nombre_seguro = f"{uuid.uuid4().hex}.{ext}"
+    dest = os.path.join(UPLOAD_DIR, nombre_seguro)
     uploaded.save(dest)
 
-
-    url = f"/uploads/{filename}"
+    url = f"/uploads/{nombre_seguro}"
     current_user.avatar_url = url
     db.session.commit()
 
     return jsonify({'message': 'Avatar uploaded', 'url': url})
 
 
-
-
-
-
-
-
-
 @upload_bp.route('/uploads/<path:filename>', methods=['GET'])
 def serve_upload(filename):
-    full_path = os.path.join(UPLOAD_DIR, filename)
-    if not os.path.isfile(full_path):
+    full_path = safe_join(UPLOAD_DIR, filename)
+    if full_path is None or not os.path.isfile(full_path):
         return jsonify({'error': 'Not found'}), 404
 
-    content_type = mimetypes.guess_type(full_path)[0] or 'application/octet-stream'
-    with open(full_path, 'rb') as f:
-        data = f.read()
-
-    return Response(data, content_type=content_type)
+    ext = filename.rsplit('.', 1)[-1].lower()
+    content_type = TIPOS_POR_EXTENSION.get(ext, 'application/octet-stream')
+    response = send_file(full_path, mimetype=content_type)
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    return response

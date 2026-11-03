@@ -11,3 +11,4 @@ requests==2.31.0
 lxml==4.9.3
 defusedxml==0.7.1
 Flask-Limiter==2.8.1
+Pillow==10.4.0
