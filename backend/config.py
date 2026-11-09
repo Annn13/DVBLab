@@ -10,11 +10,6 @@ import os
 import secrets
 
 
-# ===== PARCHE M1 · Autenticación (Jose Arrieta) · OWASP A05 =====
-# ANTES (vulnerable):  app.config['SECRET_KEY'] = 'supersecret'  (secreto escrito en el código).
-# AHORA (parche):      el secreto se carga desde la variable de entorno SECRET_KEY; en
-#                      producción es obligatorio. Fuera del repositorio.
-# ================================================================
 def _get_secret():
     env_secret = os.environ.get("SECRET_KEY")
     if env_secret:
