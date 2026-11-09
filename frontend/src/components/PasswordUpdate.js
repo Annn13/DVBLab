@@ -11,7 +11,12 @@ const PasswordUpdate = () => {
     try {
       const token = localStorage.getItem('token');
 
-      // El servidor identifica al usuario por su sesion; ya NO se envia user_id.
+      // ===== PARCHE M1 · Autenticación (Jose Arrieta) · OWASP A01 (IDOR) =====
+      // ANTES (vulnerable): se leía el user_id del JWT y se enviaba en el body,
+      //                     permitiendo cambiar la contraseña de otro usuario.
+      // AHORA (parche):     ya NO se envía user_id; el servidor usa la sesión y se
+      //                     envía current_password. El id lo pone el backend.
+      // =====================================================================
       const response = await fetch(`${API_BASE_URL}/api/update-password`, {
         method: 'POST',
         headers: {

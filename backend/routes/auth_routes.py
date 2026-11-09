@@ -31,6 +31,11 @@ def _issue_token(user):
     )
 
 
+# ===== PARCHE M1 · Autenticación (Jose Arrieta) · OWASP A05 (cookie insegura) =====
+# ANTES (vulnerable): resp.set_cookie('session_token', token, httponly=False, secure=False)
+#                     -> legible por JavaScript (robo de sesión vía XSS), sin SameSite.
+# AHORA (parche):     HttpOnly + Secure + SameSite=Strict y TTL corto (función de abajo).
+# ==================================================================================
 def _set_session_cookie(resp, token):
     """Entrega el token en una cookie HttpOnly, Secure y SameSite=Strict."""
     resp.set_cookie(
@@ -81,7 +86,11 @@ def login():
     if not isinstance(username, str) or not isinstance(password, str):
         return jsonify({'error': 'Invalid username or password'}), 401
 
-    # Consulta parametrizada del ORM: elimina la inyeccion SQL del login.
+    # ===== PARCHE M1 · Autenticación (Jose Arrieta) · OWASP A03 (SQL Injection) =====
+    # ANTES (vulnerable): query = f"SELECT * FROM user WHERE username = '{username}'"
+    #                     user = db.session.execute(query).fetchone()  -> inyectable.
+    # AHORA (parche):     consulta parametrizada del ORM (no se concatena SQL).
+    # ================================================================================
     user = User.query.filter_by(username=username).first()
 
     success = bool(user and user.check_password(password))
@@ -185,7 +194,12 @@ def update_password(current_user):
     current_password = data.get('current_password', '')
     new_password = data.get('new_password', '')
 
-    # El usuario SIEMPRE se toma de la sesion, nunca de user_id del cuerpo.
+    # ===== PARCHE M1 · Autenticación (Jose Arrieta) · OWASP A01 (IDOR) =====
+    # ANTES (vulnerable): user_id = data.get('user_id'); user = User.query.get(user_id);
+    #                     user.set_password(new_password)  -> cambiaba la clave de cualquiera.
+    # AHORA (parche):     el usuario SIEMPRE es current_user (sesión) y se exige la
+    #                     contraseña actual antes de cambiarla.
+    # =======================================================================
     if not current_user.check_password(current_password):
         return jsonify({'error': 'La contrasena actual es incorrecta'}), 403
 
@@ -204,9 +218,14 @@ def forgot_password():
     data = request.get_json(silent=True) or {}
     username = data.get('username', '')
 
+    # ===== PARCHE M1 · Autenticación (Jose Arrieta) · OWASP A07 (reset predecible) =====
+    # ANTES (vulnerable): token = hashlib.md5(username.encode()).hexdigest() y se devolvía
+    #                     en la respuesta (debug_token), sin expiración -> cualquiera reseteaba.
+    # AHORA (parche):     token aleatorio (secrets), se guarda SOLO su hash SHA-256 con
+    #                     expiración, y la respuesta es genérica (no revela el token).
+    # ===================================================================================
     user = User.query.filter_by(username=username).first()
     if user:
-        # Token aleatorio de 32 bytes; se guarda SOLO su hash, con expiracion.
         raw_token = secrets.token_urlsafe(32)
         user.reset_token = hashlib.sha256(raw_token.encode()).hexdigest()
         user.reset_token_expires = datetime.utcnow() + timedelta(minutes=30)
@@ -262,7 +281,11 @@ def import_profile(current_user):
     try:
         profile_yaml = (request.get_json(silent=True) or {}).get('profile_yaml', '')
 
-        # safe_load no instancia objetos Python arbitrarios: no hay RCE.
+        # ===== PARCHE M1 · Autenticación (Jose Arrieta) · OWASP A08 (YAML → RCE) =====
+        # ANTES (vulnerable): yaml.load(profile_yaml, Loader=yaml.Loader) -> instanciaba
+        #                     objetos Python arbitrarios = ejecución remota de código.
+        # AHORA (parche):     yaml.safe_load (no instancia objetos) + lista blanca de campos.
+        # ============================================================================
         profile_data = yaml.safe_load(profile_yaml)
 
         if not isinstance(profile_data, dict):
