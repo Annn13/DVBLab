@@ -4,6 +4,13 @@ import jwt
 from models import User
 
 
+# ===== PARCHE M1 · Autenticación (Jose Arrieta) · OWASP A07/A01 =====
+# ANTES (vulnerable):  si jwt.decode(token, 'secret', ['HS256']) fallaba, se re-decodificaba
+#                      con options={'verify_signature': False, 'verify_exp': False} y
+#                      algorithms=['HS256', 'none'] -> aceptaba tokens SIN firma (alg:none).
+# AHORA (parche):      una sola jwt.decode que verifica firma y expiración con HS256 fijo y
+#                      el secreto de configuración. Se eliminó el fallback inseguro.
+# ====================================================================================
 def _decode_token(token):
     """Decodifica y VERIFICA un JWT.
 

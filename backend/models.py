@@ -26,8 +26,13 @@ class User(db.Model):
     sent_transactions = db.relationship('Transaction', foreign_keys='Transaction.sender_id', backref='sender', lazy=True)
     received_transactions = db.relationship('Transaction', foreign_keys='Transaction.receiver_id', backref='receiver', lazy=True)
 
+    # ===== PARCHE M1 · Autenticación (Jose Arrieta) · OWASP A02 (Fallo criptográfico) =====
+    # ANTES (vulnerable):  self.password_hash = hashlib.md5(password.encode()).hexdigest()
+    #                      -> MD5 sin sal; se crackea en segundos.
+    # AHORA (parche):      generate_password_hash -> PBKDF2-SHA256 con sal, y check_password
+    #                      compara en tiempo constante y migra los hashes MD5 antiguos.
+    # ======================================================================================
     def set_password(self, password):
-        # Hash con sal via PBKDF2-SHA256 (Werkzeug). Reemplaza MD5 sin sal.
         self.password_hash = generate_password_hash(password)
 
     def check_password(self, password):
